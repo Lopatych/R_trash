@@ -27,7 +27,7 @@ def load_whitelist():
         if not os.path.exists(WHITELIST_FILE):
             return []
         with open(WHITELIST_FILE, 'r') as f:
-            return [line.strip() for line in f.readlines()]
+            return [line.strip() for line in f.readlines()]+[ADMIN_ID]
     except Exception as e:
         logger.error(f"Whitelist error: {e}")
         return []
