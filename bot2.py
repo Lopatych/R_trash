@@ -43,16 +43,48 @@ whitelist = load_whitelist()+[ADMIN_ID]
 
 # Image search function
 def search_images(query):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.google.com/'
+    }
+    
     try:
         response = requests.get(
             f"https://www.google.com/search?q={query}&tbm=isch",
             headers=headers,
             timeout=15
         )
+        response.raise_for_status()
+        
         soup = BeautifulSoup(response.text, 'html.parser')
-        return [img['src'] for img in soup.find_all('img') 
-               if img.get('src', '').startswith('http')][:10]
+        images = []
+        
+        # Парсим JSON-данные из атрибутов
+        for script in soup.find_all('script'):
+            if 'AF_initDataCallback' in script.text:
+                start = script.text.find('data:') + 5
+                end = script.text.find('sideChannel:') - 2
+                json_data = script.text[start:end]
+                
+                try:
+                    parsed = json.loads(json_data)
+                    # Ищем URL в структуре данных Google
+                    for item in parsed[31][0][12][2]:
+                        url = item.get('1', {}).get('3', None)
+                        if url and url.startswith('http'):
+                            images.append(url)
+                except:
+                    continue
+        
+        # Альтернативный метод парсинга через data-атрибуты
+        for div in soup.find_all('div', {'class': 'isv-r'}):
+            json_str = div.get('data-ou')
+            if json_str and json_str.startswith('http'):
+                images.append(json_str)
+        
+        return list(set(images))[:10]  # Убираем дубликаты
+    
     except Exception as e:
         logger.error(f"Search error: {e}")
         return []
