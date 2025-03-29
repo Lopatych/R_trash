@@ -119,8 +119,7 @@ def health_check():
 
 # Initialization
 if __name__ == '__main__':
-    if os.getenv('RENDER'):
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/webhook")
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/webhook")
     app.run(host='0.0.0.0', port=os.getenv('PORT', 5000))
