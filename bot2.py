@@ -1,157 +1,195 @@
-import telebot
-from telebot import types
-import requests
-from bs4 import BeautifulSoup
 import os
-import time
 import logging
+from functools import lru_cache
 from flask import Flask, request
+import telebot
+from telebot.types import InputMediaAnimation, InlineKeyboardMarkup, InlineKeyboardButton
+import requests
+from cachetools import TTLCache
 
-app = Flask(__name__)
+# Настройка логгера
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# Configuration
-bot = telebot.TeleBot(os.getenv('BOT_TOKEN'))
-WHITELIST_FILE = 'whitelist.txt'
+# Конфигурация
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+GIPHY_API_KEY = os.getenv('GIPHY_API_KEY')
 ADMIN_ID = os.getenv('ADMIN_ID')
+WHITELIST_FILE = 'whitelist.txt'
+CACHE_SIZE = 100
+CACHE_TTL = 300
 
-# Logging setup
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+# Инициализация
+bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+gif_cache = TTLCache(maxsize=CACHE_SIZE, ttl=CACHE_TTL)
+user_states = {}
 
-# Whitelist management
-def load_whitelist():
-    try:
-        if not os.path.exists(WHITELIST_FILE):
-            return []
-        with open(WHITELIST_FILE, 'r') as f:
-            return [line.strip() for line in f.readlines()]
-    except Exception as e:
-        logger.error(f"Whitelist error: {e}")
-        return []
+# Файл вайтлиста
+if not os.path.exists(WHITELIST_FILE):
+    with open(WHITELIST_FILE, 'w') as f:
+        if ADMIN_ID:
+            f.write(f"{ADMIN_ID}\n")
 
-def save_whitelist(data):
-    try:
-        with open(WHITELIST_FILE, 'w') as f:
-            f.write('\n'.join(data))
-    except Exception as e:
-        logger.error(f"Save whitelist error: {e}")
+# Утилиты
+def update_whitelist(user_id):
+    with open(WHITELIST_FILE, 'a+') as f:
+        f.seek(0)
+        if str(user_id) not in f.read().splitlines():
+            f.write(f"{user_id}\n")
 
-whitelist = load_whitelist()+[ADMIN_ID]
+def check_whitelist(user_id):
+    with open(WHITELIST_FILE, 'r') as f:
+        return str(user_id) in f.read().splitlines()
 
-# Image search function
-def search_images(query):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.google.com/'
-    }
-    
-    try:
-        response = requests.get(
-            f"https://www.google.com/search?q={query}&tbm=isch",
-            headers=headers,
-            timeout=15
-        )
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        images = []
-        
-        # Парсим JSON-данные из атрибутов
-        for script in soup.find_all('script'):
-            if 'AF_initDataCallback' in script.text:
-                start = script.text.find('data:') + 5
-                end = script.text.find('sideChannel:') - 2
-                json_data = script.text[start:end]
-                
-                try:
-                    parsed = json.loads(json_data)
-                    # Ищем URL в структуре данных Google
-                    for item in parsed[31][0][12][2]:
-                        url = item.get('1', {}).get('3', None)
-                        if url and url.startswith('http'):
-                            images.append(url)
-                except:
-                    continue
-        
-        # Альтернативный метод парсинга через data-атрибуты
-        for div in soup.find_all('div', {'class': 'isv-r'}):
-            json_str = div.get('data-ou')
-            if json_str and json_str.startswith('http'):
-                images.append(json_str)
-        
-        return list(set(images))[:10]  # Убираем дубликаты
-    
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        return []
-
-# Bot handlers
-@bot.message_handler(commands=['add', 'remove'])
-def handle_admin(message):
+# Команды админа
+@bot.message_handler(commands=['add'])
+def handle_add(message):
     if str(message.from_user.id) != ADMIN_ID:
-        return
-    try:
-        cmd, user_id = message.text.split()
-        if cmd == '/add' and user_id not in whitelist:
-            whitelist.append(user_id)
-            save_whitelist(whitelist)
-            bot.reply_to(message, f"✅ Added {user_id}")
-        elif cmd == '/remove' and user_id in whitelist:
-            whitelist.remove(user_id)
-            save_whitelist(whitelist)
-            bot.reply_to(message, f"❌ Removed {user_id}")
-    except Exception as e:
-        logger.error(f"Admin command error: {e}")
-
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    if str(message.from_user.id) not in whitelist:
-        bot.reply_to(message, "🔒 Contact administrator for access")
-        return
-    bot.reply_to(message, "🔍 Send me a search query to get images!")
-
-@bot.message_handler(func=lambda m: True)
-def handle_query(message):
-    user_id = str(message.from_user.id)
-    if user_id not in whitelist:
+        bot.reply_to(message, "⛔ Требуются права администратора!")
         return
     
     try:
-        query = message.text.strip()
-        if len(query) > 100:
-            bot.reply_to(message, "❌ Query too long (max 100 chars)")
+        user_id = message.text.split()[1]
+        update_whitelist(user_id)
+        bot.reply_to(message, f"✅ Пользователь {user_id} добавлен в вайтлист")
+    except IndexError:
+        bot.reply_to(message, "Использование: /add <user_id>")
+
+@bot.message_handler(commands=['remove'])
+def handle_remove(message):
+    if str(message.from_user.id) != ADMIN_ID:
+        bot.reply_to(message, "⛔ Требуются права администратора!")
+        return
+    
+    try:
+        user_id = message.text.split()[1]
+        with open(WHITELIST_FILE, "r") as f:
+            lines = f.readlines()
+        with open(WHITELIST_FILE, "w") as f:
+            for line in lines:
+                if line.strip() != user_id:
+                    f.write(line)
+        bot.reply_to(message, f"✅ Пользователь {user_id} удален из вайтлиста")
+    except IndexError:
+        bot.reply_to(message, "Использование: /remove <user_id>")
+
+@bot.message_handler(commands=['whitelist'])
+def handle_whitelist(message):
+    if str(message.from_user.id) != ADMIN_ID:
+        bot.reply_to(message, "⛔ Требуются права администратора!")
+        return
+    
+    with open(WHITELIST_FILE, 'r') as f:
+        users = f.read().splitlines()
+    
+    bot.reply_to(message, f"👥 Пользователи в вайтлисте:\n" + "\n".join(users))
+
+# Поиск с кэшированием
+@lru_cache(maxsize=CACHE_SIZE)
+def search_gifs(query, limit=10, offset=0):
+    url = "https://api.giphy.com/v1/gifs/search"
+    params = {
+        'api_key': GIPHY_API_KEY,
+        'q': query,
+        'limit': limit,
+        'offset': offset,
+        'lang': 'ru'
+    }
+    response = requests.get(url, params=params)
+    return response.json()['data'] if response.status_code == 200 else []
+
+# Пагинация
+def create_pagination_markup(query, offset):
+    markup = InlineKeyboardMarkup()
+    if offset > 0:
+        markup.add(InlineKeyboardButton("⬅ Назад", callback_data=f"prev_{query}_{offset}"))
+    markup.add(InlineKeyboardButton("➡ Вперед", callback_data=f"next_{query}_{offset}"))
+    return markup
+
+# Обработка запросов
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    user_id = message.from_user.id
+    
+    if not check_whitelist(str(user_id)):
+        bot.reply_to(message, "⛔ Доступ запрещен!")
+        return
+    
+    search_query = message.text.strip()
+    if not search_query:
+        return
+    
+    user_states[user_id] = {'query': search_query, 'offset': 0}
+    send_gifs(message.chat.id, search_query)
+
+def send_gifs(chat_id, query, offset=0):
+    try:
+        data = search_gifs(query, limit=10, offset=offset)
+        if not data:
+            bot.send_message(chat_id, "Ничего не найдено 😞")
             return
         
-        logger.info(f"New search: {query[:20]}... by {user_id}")
-        bot.send_chat_action(message.chat.id, 'upload_photo')
+        media_group = []
+        for i, gif in enumerate(data[:10]):
+            media = InputMediaAnimation(
+                media=gif['images']['original']['url'],
+                caption=f"Страница {offset//10 + 1}" if i == 0 else ''
+            )
+            media_group.append(media)
         
-        if images := search_images(query)[:10]:
-            bot.send_media_group(message.chat.id, [types.InputMediaPhoto(url) for url in images])
-        else:
-            bot.reply_to(message, "❌ No images found")
+        bot.send_media_group(chat_id, media_group)
+        bot.send_message(
+            chat_id,
+            f"Результаты по запросу: {query}",
+            reply_markup=create_pagination_markup(query, offset)
+        )
+        
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"Error: {e}")
+        bot.send_message(chat_id, "⚠ Произошла ошибка")
 
-# Webhook routes
+# Обработка инлайн-кнопок
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    user_id = call.from_user.id
+    if not check_whitelist(str(user_id)):
+        return
+    
+    data = call.data.split('_')
+    action, query, offset = data[0], '_'.join(data[1:-1]), int(data[-1])
+    
+    new_offset = offset - 10 if action == 'prev' else offset + 10
+    if new_offset < 0:
+        new_offset = 0
+    
+    user_states[user_id] = {'query': query, 'offset': new_offset}
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+    send_gifs(call.message.chat.id, query, new_offset)
+
+# Веб-сервер для Render
+@app.route('/')
+def index():
+    return "Bot is running!"
+
 @app.route('/webhook', methods=['POST'])
-def webhook_handler():
+def webhook():
     if request.headers.get('content-type') == 'application/json':
-        update = types.Update.de_json(request.get_json())
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-        return 'ok', 200
+        return ''
     return 'Bad request', 400
 
-@app.route('/')
-def health_check():
-    return 'Bot is running', 200
-
-# Initialization
 if __name__ == '__main__':
+    logger.info("Starting bot...")
     bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/webhook")
-    app.run(host='0.0.0.0', port=os.getenv('PORT', 5000))
+    bot.set_webhook(url=f"https://your-render-service.onrender.com/webhook")
+    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
