@@ -27,7 +27,7 @@ def load_whitelist():
         if not os.path.exists(WHITELIST_FILE):
             return []
         with open(WHITELIST_FILE, 'r') as f:
-            return [line.strip() for line in f.readlines()]+[ADMIN_ID]
+            return [line.strip() for line in f.readlines()]
     except Exception as e:
         logger.error(f"Whitelist error: {e}")
         return []
@@ -39,7 +39,7 @@ def save_whitelist(data):
     except Exception as e:
         logger.error(f"Save whitelist error: {e}")
 
-whitelist = load_whitelist()
+whitelist = load_whitelist()+[ADMIN_ID]
 
 # GIF search function
 def search_gifs(query):
